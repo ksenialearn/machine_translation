@@ -190,7 +190,7 @@ while epoch < n_epochs:
         encoder_optimizer, decoder_optimizer, criterion
     )
     
-    file_loss.write(loss, ec, dc)
+    file_loss.write(str(loss)+str(ec)+str(dc))
     # Keep track of loss
     print_loss_total += loss
     plot_loss_total += loss
