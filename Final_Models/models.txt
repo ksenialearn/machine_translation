@@ -1,0 +1,3 @@
+RNN Encoder Decoder
+RNN Encoder Decoder with Attention
+CNN Encoder RNN Decoder
