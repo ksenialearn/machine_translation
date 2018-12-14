@@ -1,0 +1,238 @@
+def load_emb_matrix(language):
+    #load fasttext word vectors
+    words_to_load = MAX_VOCAB_SIZE
+    if language == 'english':
+        file = 'wiki-news-300d-1M-subword.vec'
+    if language == 'chinese':
+        file = 'cc.zh.300.vec'
+    
+
+    with open(folder_path + 'data/' + file) as f:
+        #remove the first line
+        firstLine = f.readline()
+        loaded_embeddings = np.zeros((words_to_load + 4, 300))
+        words2id = {}
+        idx2words = {}
+        #ordered_words = []
+        for i, line in enumerate(f):
+            if i >= words_to_load: 
+                break
+            s = line.split()
+            loaded_embeddings[i + 4 , :] = np.asarray(s[1:])
+            words2id['<SOS>'] = SOS_token
+            words2id['<EOS>'] = EOS_token
+            words2id['<pad>'] = PAD_IDX
+            words2id['<unk>'] = UNK_IDX
+            words2id[s[0]] = i + 4
+            
+            idx2words[0] = '<SOS>'
+            idx2words[1] = '<EOS>'
+            idx2words[2] = '<pad>'
+            idx2words[3] = '<unk>'
+            
+            idx2words[i + 4] = s[0]
+   
+
+    return words2id,idx2words,loaded_embeddings
+
+def generate_weights_matrix(idx2words,loaded_embeddings):
+   
+    matrix_len = len(idx2words)
+    weights_matrix = np.zeros((matrix_len, 300))
+    
+    for key in idx2words.keys():
+        try: 
+            weights_matrix[key] = loaded_embeddings[key]
+        except KeyError:
+            weights_matrix[key] = np.random.normal(scale=0.6, size=(emb_dim, ))
+    return weights_matrix
+
+#generate words2id, idx2words for both langauges and save to local 
+words2id_eng,idx2words_eng,loaded_embeddings_eng = load_emb_matrix('english')
+words2id_zh,idx2words_zh,loaded_embeddings_zh = load_emb_matrix('chinese')
+
+
+weights_matrix_eng = generate_weights_matrix(idx2words_eng,loaded_embeddings_eng)
+weights_matrix_eng = torch.from_numpy(weights_matrix_eng).to(device)
+weights_matrix_zh = generate_weights_matrix(idx2words_zh,loaded_embeddings_zh)
+weights_matrix_zh = torch.from_numpy(weights_matrix_zh).to(device)
+
+#define a class of language
+class Language:
+    def __init__(self, name,word2index,index2word):
+        self.name = name
+        self.word2index = word2index
+        self.index2word = index2word
+        self.n_words = len(word2index)
+
+
+#replace some special characters and normalize it.
+def normalizeString(s):
+    s = s.replace(r"&quot;","")
+    s = s.replace(r"&apos;","'")
+    s = unicodeToAscii(s.strip())
+    s = re.sub(r"([.!?])", r" \1", s)
+    s = re.sub(r"[^a-zA-Z.!?]+", r" ", s)
+    return s
+  
+#only keep sentences with length <= MAX_LENGTH
+def filterPair(p):
+    return len(p[0].split(' ')) < MAX_LENGTH and \
+        len(p[1].split(' ')) < MAX_LENGTH
+
+
+def filterPairs(pairs):
+    return [pair for pair in pairs if filterPair(pair)]
+
+#To read the data file we will split the file into lines, and then split lines into pairs. 
+def readLanguages(input_lang,target_lang):
+    print("\nReading lines...")
+
+    # Read the file and split into lines
+    input_lines = open(folder_path + input_lang, encoding='utf-8').\
+        read().strip().split('\n')
+    print("Chinese input length:{}".format(len(input_lines)))
+    target_lines = open(folder_path + target_lang, encoding='utf-8').\
+        read().strip().split('\n')
+    #make sure that both source language and reference language have same length.
+    print("English input length:{}".format(len(target_lines)))
+
+    # Split every line and normalize
+    #for chinese input, strip the space at the begining and end of the sentence
+    #for english output, use normalizeString function
+    input_lines_norm = [l.strip() for l in input_lines]
+    target_lines_norm = [normalizeString(l) for l in target_lines]
+    
+    #build pairs and drop pair if both zh and en are empty strings
+    pairs = [[item[0],item[1]] for item in zip(input_lines_norm,target_lines_norm) if len(item[0])+len(item[1]) != 0]
+    
+    input_lines = Language("zh",words2id_zh,idx2words_zh)
+    target_lines = Language("en",words2id_eng,idx2words_eng)
+
+    return input_lines, target_lines, pairs
+
+def prepareData(input_lang, target_lang):
+    input_lang, output_lang, pairs = readLanguages(input_lang, target_lang)
+    print("Read %s sentence pairs" % len(pairs))
+    pairs = filterPairs(pairs)
+    print("Trimmed to %s sentence pairs" % len(pairs))
+    print("Counting words...")
+
+    print(input_lang.name, input_lang.n_words)
+    print(output_lang.name, output_lang.n_words)
+    
+    return input_lang, output_lang, pairs
+
+
+train_input_lang, train_output_lang, train_pairs = prepareData(train_zh, train_en)
+print("print a random pair of training pairs:")
+print(random.choice(train_pairs))
+
+
+
+val_input_lang, val_output_lang, val_pairs = prepareData(val_zh, val_en)
+print("print a random pair of validation pairs:")
+print(random.choice(val_pairs))
+
+def indexesFromSentence(lang, sentence):
+    return [lang.word2index[word] if word in lang.word2index else UNK_IDX for word in sentence.split(' ')] + [EOS_token]
+
+
+class VocabDataset(Dataset):
+    """
+    Note that this class inherits torch.utils.data.Dataset
+    """
+
+    def __init__(self, pairs,input_language, output_language):
+        """
+        @param pairs: pairs of input and target sentences(raw text sentences)
+        @param input_language: Class Lang of input languages (zh in this case)
+        @param output_language: Class Lang of output languages (en in this case)
+
+        """
+        self.pairs = pairs
+        self.inputs = [pair[0] for pair in pairs]
+        self.input_lang = input_language
+        self.output_lang = output_language
+        self.outputs = [pair[1] for pair in pairs]
+        
+        
+        #assert self.input_lang == self.target_lang
+       
+    def __len__(self):
+         return len(self.pairs)
+
+    def __getitem__(self, key):
+        """
+        Triggered when you call dataset[i]
+        """
+        
+        #turn raw text sentecens into indices
+        input_ = indexesFromSentence(self.input_lang, self.inputs[key])
+        output = indexesFromSentence(self.output_lang, self.outputs[key])
+        
+        #print both the length of the source sequence and the target sequence
+        return [input_,len(input_),output,len(output)]
+    
+    
+    def __gettext__(self,key):
+        return [self.inputs[key],self.outputs[key]]
+
+def vocab_collate_func(batch):
+    """
+    Customized function for DataLoader that dynamically pads the batch so that all
+    data have the same length
+    """
+    input_data_list = []
+    output_data_list = []
+   
+    
+    for datum in batch:
+        input_data_list.append(datum[0])
+        output_data_list.append(datum[2])
+      
+      
+    # Zip into pairs, sort by length (descending), unzip
+    seq_pairs = sorted(zip(input_data_list, output_data_list), key=lambda p: len(p[0]), reverse=True)
+    input_seqs, output_seqs = zip(*seq_pairs)
+    
+    #store the length of the sequences 
+    input_data_len = [len(p) for p in input_seqs]
+    output_data_len = [len(p) for p in output_seqs]
+    
+    #padding
+    padded_vec_input = [np.pad(np.array(p),
+                                 pad_width=((0,MAX_LENGTH-len(p))),
+                                 mode="constant", constant_values=0) for p in input_seqs]
+        
+    padded_vec_output = [np.pad(np.array(p),
+                                 pad_width=((0,MAX_LENGTH-len(p))),
+                                 mode="constant", constant_values=0) for p in output_seqs]      
+    
+    
+    input_var = Variable(torch.LongTensor(padded_vec_input))
+    output_var = Variable(torch.LongTensor(padded_vec_output))
+    input_data_len = Variable(torch.LongTensor(input_data_len))
+    output_data_len = Variable(torch.LongTensor(output_data_len))
+    
+    
+    return [input_var,input_data_len,output_var,output_data_len]
+   
+
+# Build train and valid dataloaders
+
+train_dataset = VocabDataset(train_pairs,train_input_lang, train_output_lang)
+train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
+                                           batch_size=BATCH_SIZE,
+                                           collate_fn=vocab_collate_func,
+                                           shuffle=True,
+                                           drop_last = True)
+
+
+val_dataset = VocabDataset(val_pairs,val_input_lang,val_output_lang)
+val_loader = torch.utils.data.DataLoader(dataset=val_dataset,
+                                           batch_size=BATCH_SIZE,
+                                           collate_fn=vocab_collate_func,
+                                           shuffle=False,
+                                         drop_last = True)
+
